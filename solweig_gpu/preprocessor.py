@@ -131,7 +131,7 @@ def check_rasters(files):
 # =============================================================================
 # Function to tile a raster file into smaller chunks.
 # =============================================================================
-def create_tiles(infile, tilesize, overlap, tile_type, preprocess_dir):
+def create_tiles(infile, tilesize, overlap, tile_type, preprocess_dir, reuse_existing=False):
     """
     Tile a raster file into smaller chunks.
 
@@ -158,11 +158,19 @@ def create_tiles(infile, tilesize, overlap, tile_type, preprocess_dir):
     height = ds.RasterYSize
 
     out_folder = os.path.join(preprocess_dir, tile_type)
-    if not os.path.exists(out_folder):
-        os.makedirs(out_folder)
-    else:
+
+    if reuse_existing and os.path.exists(out_folder):
+        existing_tiles = [
+            f for f in os.listdir(out_folder)
+            if f.lower().endswith(".tif") and not f.startswith(".")
+        ]
+        if existing_tiles:
+            print(f"Reusing existing tiles for {tile_type} in {out_folder}")
+            return
+
+    if os.path.exists(out_folder):
         shutil.rmtree(out_folder)
-        os.makedirs(out_folder)
+    os.makedirs(out_folder)
 
     if tilesize >= width and tilesize >= height:
         outfile = os.path.join(out_folder, f"{tile_type}_0_0.tif")
@@ -885,7 +893,7 @@ def create_met_files(base_path, source_met_file, preprocess_dir):
 # =============================================================================
 def ppr(base_path, building_dsm_filename, dem_filename, trees_filename, landcover_filename,
          tile_size, overlap, selected_date_str, use_own_met,start_time=None, end_time=None, data_source_type=None, data_folder=None,
-         own_met_file=None, preprocess_dir=None):
+         own_met_file=None, preprocess_dir=None, reuse_tiles=False):
     """
     Preprocessing routine to validate raster files, generate tiles, and prepare metfiles for SOLWEIG.
 
@@ -943,7 +951,7 @@ def ppr(base_path, building_dsm_filename, dem_filename, trees_filename, landcove
         
     for tile_type, raster in rasters.items():
         print(f"Creating tiles for {tile_type}...")
-        create_tiles(raster, tile_size, overlap, tile_type, preprocess_dir)
+        create_tiles(raster, tile_size, overlap, tile_type, preprocess_dir,reuse_existing=reuse_tiles)
     
     # For metfiles processing, we use the DEM tiles folder.
     dem_tiles_folder = os.path.join(preprocess_dir, "DEM")

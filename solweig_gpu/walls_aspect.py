@@ -177,7 +177,17 @@ def process_file_parallel(args):
     Returns:
         str: Filename of processed tile
     """
-    filename, dem_folder_path, wall_output_path, aspect_output_path = args
+    filename, dem_folder_path, wall_output_path, aspect_output_path, skip_existing = args
+
+    wall_name = f"walls_{filename[13:-4]}.tif"
+    aspect_name = f"aspect_{filename[13:-4]}.tif"
+    wall_path = os.path.join(wall_output_path, wall_name)
+    aspect_path = os.path.join(aspect_output_path, aspect_name)
+
+    if skip_existing and os.path.exists(wall_path) and os.path.exists(aspect_path):
+        print(f"Skipping existing wall/aspect for {filename}")
+        return filename
+
     dem_path = os.path.join(dem_folder_path, filename)
 
     dataset = None
@@ -268,7 +278,7 @@ def process_file_parallel(args):
             dataset = None
         return filename
 
-def run_parallel_processing(dem_folder_path, wall_output_path, aspect_output_path):
+def run_parallel_processing(dem_folder_path, wall_output_path, aspect_output_path, skip_existing=False):
     """
     Process all DEM tiles in parallel to calculate walls and aspects.
     
@@ -291,7 +301,7 @@ def run_parallel_processing(dem_folder_path, wall_output_path, aspect_output_pat
     os.makedirs(aspect_output_path, exist_ok=True)
 
     dem_files = [f for f in os.listdir(dem_folder_path) if f.endswith('.tif') and not f.startswith('.')]
-    args_list = [(f, dem_folder_path, wall_output_path, aspect_output_path) for f in dem_files]
+    args_list = [(f, dem_folder_path, wall_output_path, aspect_output_path, skip_existing) for f in dem_files]
 
     # On Windows, use fewer workers to avoid file locking issues
     # Reduce max_workers to prevent excessive concurrent file access
