@@ -34,6 +34,8 @@ def thermal_comfort(
     save_lup=False,
     save_ldown=False,
     save_shadow=False
+    reuse_tiles = False,
+    reuse_wall_aspect = False,
 ):
     """
     Main function to compute urban thermal comfort using the SOLWEIG-GPU model.
@@ -127,7 +129,8 @@ def thermal_comfort(
         base_path, building_dsm_filename, dem_filename, trees_filename,
         landcover_filename, tile_size, overlap, selected_date_str, use_own_met,
         start_time, end_time, data_source_type, data_folder, own_met_file,
-         preprocess_dir=preprocess_dir
+        preprocess_dir=preprocess_dir,
+        reuse_tiles=reuse_tiles
     )
 
     base_output_path = os.path.join(base_path, "output_folder")
@@ -139,7 +142,7 @@ def thermal_comfort(
     walls_dir = os.path.join(preprocess_dir, "walls")
     aspect_dir = os.path.join(preprocess_dir, "aspect")
 
-    run_parallel_processing(building_dsm_dir, walls_dir, aspect_dir)
+    run_parallel_processing(building_dsm_dir, walls_dir, aspect_dir,skip_existing=reuse_wall_aspect)
     print("Running Solweig ...")
 
     building_dsm_map = map_files_by_key(building_dsm_dir, ".tif")
@@ -151,6 +154,7 @@ def thermal_comfort(
     met_map = map_files_by_key(inputMet, ".txt")
 
     common_keys = set(building_dsm_map) & set(tree_map) & set(dem_map) & set(met_map)
+    
     if landcover_dir:
         common_keys &= set(landcover_map)
 
