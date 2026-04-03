@@ -852,19 +852,80 @@ def process_metfiles(netcdf_file, raster_folder, base_path, selected_date_str, p
 
     dataset.close()
     print(f"All raster extents processed and metfiles saved in {metfiles_folder}")
-    
+
+def filter_met_file_by_time(source_met_file, start_time=None, end_time=None):
+    """
+    Read a SOLWEIG met txt file and filter rows by datetime range.
+
+    Assumptions:
+    - First row is header
+    - File is whitespace-delimited
+    - First 4 columns are: Year, DOY, Hour, Minute
+    """
+    with open(source_met_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    if len(lines) < 2:
+        raise ValueError(f"Met file is empty or invalid: {source_met_file}")
+
+    header_line = lines[0].rstrip("\n")
+
+    df = pd.read_csv(
+        source_met_file,
+        sep=r"\s+",
+        skiprows=1,
+        header=None,
+        engine="python"
+    )
+
+    if df.empty:
+        raise ValueError(f"No met data found in: {source_met_file}")
+
+    if df.shape[1] < 4:
+        raise ValueError(
+            "Met file must have at least 4 columns: Year DOY Hour Minute"
+        )
+
+    year = df.iloc[:, 0].astype(int)
+    doy = df.iloc[:, 1].astype(int)
+    hour = df.iloc[:, 2].astype(int)
+    minute = df.iloc[:, 3].astype(int)
+
+    base_date = pd.to_datetime(year.astype(str), format="%Y")
+    dt_index = (
+        base_date
+        + pd.to_timedelta(doy - 1, unit="D")
+        + pd.to_timedelta(hour, unit="h")
+        + pd.to_timedelta(minute, unit="m")
+    )
+
+    mask = pd.Series(True, index=df.index)
+
+    if start_time is not None:
+        start_dt = pd.to_datetime(start_time)
+        mask &= dt_index >= start_dt
+
+    if end_time is not None:
+        end_dt = pd.to_datetime(end_time)
+        mask &= dt_index <= end_dt
+
+    filtered_df = df.loc[mask].copy()
+
+    if filtered_df.empty:
+        raise ValueError(
+            f"No rows remain after filtering met file.\n"
+            f"start_time={start_time}, end_time={end_time}"
+        )
+
+    return header_line, filtered_df
+
 # =============================================================================
 # Function to process own met file: copies the source met file into new files
 # renaming each copy based on the numeric suffix extracted from .tif files.
 # =============================================================================
-def create_met_files(base_path, source_met_file, preprocess_dir):
+def create_met_files(base_path, source_met_file, preprocess_dir, start_time=None, end_time=None):
     """
-    Copy a given met file to multiple outputs based on the raster tile filenames.
-
-    Parameters:
-        base_path (str): Base directory containing input rasters.
-        source_met_file (str): Path to user-provided met file.
-        preprocess_dir (str): Directory for preprocessing outputs (pre_processing_outputs).
+    Create met files for each tile, filtering the source met file by time range first.
     """
     raster_folder = os.path.join(preprocess_dir, 'Building_DSM')
     target_folder = os.path.join(preprocess_dir, 'metfiles')
@@ -874,7 +935,13 @@ def create_met_files(base_path, source_met_file, preprocess_dir):
     else:
         shutil.rmtree(target_folder)
         os.makedirs(target_folder)
-    
+
+    header_line, filtered_df = filter_met_file_by_time(
+        source_met_file,
+        start_time=start_time,
+        end_time=end_time
+    )
+
     for file in os.listdir(raster_folder):
         if file.lower().endswith('.tif'):
             name_without_ext = os.path.splitext(file)[0]
@@ -883,8 +950,19 @@ def create_met_files(base_path, source_met_file, preprocess_dir):
                 digits = name_without_ext[len(prefix):]
                 new_filename = f'metfile_{digits}.txt'
                 target_met_file = os.path.join(target_folder, new_filename)
-                shutil.copy(source_met_file, target_met_file)
-                print(f"Copied to {target_met_file}")
+
+                with open(target_met_file, "w", encoding="utf-8") as f:
+                    f.write(header_line + "\n")
+
+                filtered_df.to_csv(
+                    target_met_file,
+                    mode="a",
+                    sep=" ",
+                    header=False,
+                    index=False
+                )
+
+                print(f"Created filtered met file: {target_met_file}")
 
 # =============================================================================
 # Main function: checks rasters, creates tiles, and creates metfiles using either a
@@ -961,7 +1039,13 @@ def ppr(base_path, building_dsm_filename, dem_filename, trees_filename, landcove
         if own_met_file is None:
             print("Error: Please provide the path to your own met file.")
             exit(1)
-        create_met_files(base_path, own_met_file, preprocess_dir)
+        create_met_files(
+            base_path,
+            own_met_file,
+            preprocess_dir,
+            start_time=start_time,
+            end_time=end_time
+        )
     else:
         # Ensure all additional required parameters are provided.
         if data_folder is None or data_source_type is None or start_time is None or end_time is None:
