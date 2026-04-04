@@ -33,7 +33,7 @@ def thermal_comfort(
     save_kdown=False,
     save_lup=False,
     save_ldown=False,
-    save_shadow=False
+    save_shadow=False,
     reuse_tiles = False,
     reuse_wall_aspect = False,
     skip_sparse_tiles=True,
