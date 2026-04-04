@@ -165,22 +165,64 @@ def filter1Goodwin_as_aspect_v3(walls, scale, a):
 
     return y
 
+def _coverage_fraction(arr):
+    """
+    Because all tiles have no blank pixels, coverage is:
+    count(arr > 0) / total_pixels
+    """
+    if arr is None:
+        return 0.0
+    total = arr.size
+    if total == 0:
+        return 0.0
+    return float(np.count_nonzero(arr > 0)) / float(total)
+
+
+def _is_sparse_tile(building_dsm_path, tree_path, min_building_fraction=0.01, min_tree_fraction=0.01):
+    """
+    A tile is considered sparse if BOTH:
+        building_fraction < min_building_fraction
+        tree_fraction < min_tree_fraction
+    """
+    dsm_ds = gdal.Open(building_dsm_path)
+    if dsm_ds is None:
+        raise FileNotFoundError(f"Could not open Building_DSM tile: {building_dsm_path}")
+    dsm_arr = dsm_ds.GetRasterBand(1).ReadAsArray()
+    dsm_ds = None
+
+    tree_ds = gdal.Open(tree_path)
+    if tree_ds is None:
+        raise FileNotFoundError(f"Could not open Trees tile: {tree_path}")
+    tree_arr = tree_ds.GetRasterBand(1).ReadAsArray()
+    tree_ds = None
+
+    building_fraction = _coverage_fraction(dsm_arr)
+    tree_fraction = _coverage_fraction(tree_arr)
+
+    sparse = (building_fraction < min_building_fraction) and (tree_fraction < min_tree_fraction)
+    return sparse, building_fraction, tree_fraction
+
 def process_file_parallel(args):
     """
-    Process a single DEM tile to calculate walls and aspect (parallel worker function).
-    
-    This function is designed to be called by parallel processing workers.
-    
-    Args:
-        args (tuple): (filename, dem_folder_path, wall_output_path, aspect_output_path)
-    
-    Returns:
-        str: Filename of processed tile
+    Process one Building_DSM tile to calculate walls and aspect.
     """
-    filename, dem_folder_path, wall_output_path, aspect_output_path, skip_existing = args
+    (
+        filename,
+        building_dsm_folder_path,
+        tree_folder_path,
+        wall_output_path,
+        aspect_output_path,
+        skip_existing,
+        skip_sparse_tiles,
+        min_building_fraction,
+        min_tree_fraction
+    ) = args
 
-    wall_name = f"walls_{filename[13:-4]}.tif"
-    aspect_name = f"aspect_{filename[13:-4]}.tif"
+    building_dsm_path = os.path.join(building_dsm_folder_path, filename)
+
+    suffix = filename[13:-4]
+    wall_name = f"walls_{suffix}.tif"
+    aspect_name = f"aspect_{suffix}.tif"
     wall_path = os.path.join(wall_output_path, wall_name)
     aspect_path = os.path.join(aspect_output_path, aspect_name)
 
@@ -188,11 +230,10 @@ def process_file_parallel(args):
         print(f"Skipping existing wall/aspect for {filename}")
         return filename
 
-    dem_path = os.path.join(dem_folder_path, filename)
-
     dataset = None
+
     try:
-        dataset = gdal.Open(dem_path)
+        dataset = gdal.Open(building_dsm_path)
         if dataset is None:
             print(f"Could not open {filename}")
             return filename
@@ -200,120 +241,168 @@ def process_file_parallel(args):
         band = dataset.GetRasterBand(1)
         a = band.ReadAsArray().astype(np.float32)
 
-        if a is None or np.all(np.isnan(a)):
-            print(f"Skipping {filename}, invalid DEM.")
-            # Close dataset before returning
+        if a is None:
+            print(f"Skipping {filename}, invalid Building_DSM.")
             dataset = None
             return filename
 
-        # Extract geotransform and projection before closing dataset
         geotransform = dataset.GetGeoTransform()
         projection = dataset.GetProjection()
-        
-        # Close input dataset immediately after reading
         dataset = None
-        
+
         scale = 1 / geotransform[1]
+
         walls = findwalls(a, walllimit)
         aspects = filter1Goodwin_as_aspect_v3(walls, scale, a)
 
         driver = gdal.GetDriverByName('GTiff')
-        out_names = [f"walls_{filename[13:-4]}.tif", f"aspect_{filename[13:-4]}.tif"]
-        out_paths = [os.path.join(wall_output_path, out_names[0]),
-                     os.path.join(aspect_output_path, out_names[1])]
+        rows, cols = walls.shape
 
-        for out_path, data in zip(out_paths, [walls, aspects]):
-            # Retry logic for Windows file locking issues
-            max_retries = 3
-            retry_delay = 0.1
-            success = False
-            
-            for attempt in range(max_retries):
-                try:
-                    out_ds = driver.Create(out_path, a.shape[1], a.shape[0], 1, gdal.GDT_Float32)
-                    if out_ds is None:
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay * (attempt + 1))
-                            continue
-                        print(f"Could not create output file {out_path}")
-                        break
-                        
-                    out_ds.SetGeoTransform(geotransform)
-                    out_ds.SetProjection(projection)
-                    out_band = out_ds.GetRasterBand(1)
-                    out_band.WriteArray(data)
-                    out_band.FlushCache()
-                    out_band = None
-                    
-                    # Explicitly close the dataset
-                    out_ds.FlushCache()
-                    out_ds = None
-                    
-                    # Force GDAL to close the file handle on Windows
-                    gc.collect()
-                    
-                    # Small delay to ensure file handle is released
-                    time.sleep(0.01)
-                    success = True
-                    break
-                    
-                except Exception as e:
-                    # Ensure cleanup before retry
-                    out_ds = None
-                    gc.collect()
-                    
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay * (attempt + 1))
-                        continue
-                    else:
-                        print(f"Error writing {out_path} after {max_retries} attempts: {e}")
-                        break
+        wall_ds = driver.Create(wall_path, cols, rows, 1, gdal.GDT_Float32)
+        wall_ds.SetGeoTransform(geotransform)
+        wall_ds.SetProjection(projection)
+        wall_ds.GetRasterBand(1).WriteArray(walls)
+        wall_ds.FlushCache()
+        wall_ds = None
 
-        return filename
+        aspect_ds = driver.Create(aspect_path, cols, rows, 1, gdal.GDT_Float32)
+        aspect_ds.SetGeoTransform(geotransform)
+        aspect_ds.SetProjection(projection)
+        aspect_ds.GetRasterBand(1).WriteArray(aspects)
+        aspect_ds.FlushCache()
+        aspect_ds = None
 
     except Exception as e:
         print(f"Error processing {filename}: {e}")
-        # Ensure dataset is closed even on error
-        if dataset is not None:
-            dataset = None
-        return filename
 
-def run_parallel_processing(dem_folder_path, wall_output_path, aspect_output_path, skip_existing=False):
+    finally:
+        dataset = None
+
+    return filename
+
+def run_parallel_processing(
+    building_dsm_folder_path,
+    tree_folder_path,
+    wall_output_path,
+    aspect_output_path,
+    skip_existing=False,
+    skip_sparse_tiles=True,
+    min_building_fraction=0.01,
+    min_tree_fraction=0.01
+):
     """
-    Process all DEM tiles in parallel to calculate walls and aspects.
-    
-    This is the main entry point for wall and aspect calculation. It uses
-    multiprocessing to process multiple tiles simultaneously for efficiency.
-    
-    Args:
-        dem_folder_path (str): Path to folder containing DEM tile GeoTIFFs
-        wall_output_path (str): Output path for wall height rasters
-        aspect_output_path (str): Output path for wall aspect rasters
-    
-    Notes:
-        - Uses multiple CPU cores for parallel processing
-        - On Windows, uses fewer workers (max 8 or half of CPU cores) to avoid file locking issues
-        - Progress bar shows processing status
-        - Creates output directories if they don't exist
-        - Skips tiles that cannot be opened or have invalid data
+    Process all Building_DSM tiles in parallel to calculate walls and aspects.
+
+    Parameters
+    ----------
+    building_dsm_folder_path : str
+        Folder containing Building_DSM_*.tif
+    tree_folder_path : str
+        Folder containing Trees_*.tif
+    wall_output_path : str
+        Output folder for walls_*.tif
+    aspect_output_path : str
+        Output folder for aspect_*.tif
+    skip_existing : bool
+        Reuse existing wall/aspect outputs if both files already exist
+    skip_sparse_tiles : bool
+        Skip tiles where BOTH building and tree coverage are below threshold
+    min_building_fraction : float
+        e.g. 0.01 means 1%
+    min_tree_fraction : float
+        e.g. 0.01 means 1%
     """
     os.makedirs(wall_output_path, exist_ok=True)
     os.makedirs(aspect_output_path, exist_ok=True)
 
-    dem_files = [f for f in os.listdir(dem_folder_path) if f.endswith('.tif') and not f.startswith('.')]
-    args_list = [(f, dem_folder_path, wall_output_path, aspect_output_path, skip_existing) for f in dem_files]
+    dsm_files = [
+        f for f in os.listdir(building_dsm_folder_path)
+        if f.endswith('.tif') and not f.startswith('.')
+    ]
 
-    # On Windows, use fewer workers to avoid file locking issues
-    # Reduce max_workers to prevent excessive concurrent file access
+    args_list = []
+    skipped_sparse = []
+
+    for f in dsm_files:
+        building_dsm_path = os.path.join(building_dsm_folder_path, f)
+
+        # Building_DSM_0_0.tif -> Trees_0_0.tif
+        tree_filename = f.replace("Building_DSM_", "Trees_", 1)
+        tree_path = os.path.join(tree_folder_path, tree_filename)
+
+        # Building_DSM_0_0.tif -> walls_0_0.tif / aspect_0_0.tif
+        suffix = f[13:-4]
+        wall_name = f"walls_{suffix}.tif"
+        aspect_name = f"aspect_{suffix}.tif"
+        wall_path = os.path.join(wall_output_path, wall_name)
+        aspect_path = os.path.join(aspect_output_path, aspect_name)
+
+        if skip_existing and os.path.exists(wall_path) and os.path.exists(aspect_path):
+            print(f"Skipping existing wall/aspect for {f}")
+            continue
+
+        if skip_sparse_tiles:
+            if not os.path.exists(tree_path):
+                print(f"Missing tree tile for {f}: {tree_path}")
+                continue
+
+            sparse, building_fraction, tree_fraction = _is_sparse_tile(
+                building_dsm_path,
+                tree_path,
+                min_building_fraction=min_building_fraction,
+                min_tree_fraction=min_tree_fraction
+            )
+
+            print(
+                f"[CHECK] {f}: "
+                f"building={building_fraction:.2%}, tree={tree_fraction:.2%}"
+            )
+
+            if sparse:
+                print(
+                    f"Skipping sparse tile before wall/aspect: {f} "
+                    f"(building={building_fraction:.2%}, tree={tree_fraction:.2%})"
+                )
+                skipped_sparse.append(f)
+                continue
+
+        args_list.append(
+            (
+                f,
+                building_dsm_folder_path,
+                tree_folder_path,
+                wall_output_path,
+                aspect_output_path,
+                skip_existing,
+                False,  
+                min_building_fraction,
+                min_tree_fraction
+            )
+        )
+
+    print(f"Total tiles found: {len(dsm_files)}")
+    print(f"Tiles submitted for wall/aspect: {len(args_list)}")
+    print(f"Skipped sparse tiles: {len(skipped_sparse)}")
+
     cpu_count = os.cpu_count() or 1
-    if os.name == 'nt':  # Windows
-        max_workers = min(8, max(1, cpu_count // 2))
+    if os.name == 'nt':
+        max_workers = min(16, max(1, cpu_count // 2))
     else:
         max_workers = min(32, cpu_count)
+
     print(f"Using {max_workers} parallel workers")
+
+    if not args_list:
+        print("No tiles to process after filtering.")
+        return
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_file_parallel, args): args[0] for args in args_list}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Computing Wall Height and Aspect", mininterval = 1):
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Computing Wall Height and Aspect",
+            mininterval=1
+        ):
             _ = future.result()
 

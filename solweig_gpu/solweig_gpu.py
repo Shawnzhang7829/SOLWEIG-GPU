@@ -36,6 +36,9 @@ def thermal_comfort(
     save_shadow=False,
     reuse_tiles = False,
     reuse_wall_aspect = False,
+    skip_sparse_tiles=True,
+    min_building_fraction=0.01,
+    min_tree_fraction=0.01,
 ):
     """
     Main function to compute urban thermal comfort using the SOLWEIG-GPU model.
@@ -115,23 +118,73 @@ def thermal_comfort(
         FileNotFoundError: If the required input files are missing
     """
 
-    from .preprocessor import ppr
-    from .utci_process import compute_utci, map_files_by_key
-    from .walls_aspect import run_parallel_processing
     import os
     import numpy as np
     import torch
-    # Create preprocessing outputs directory
+    from osgeo import gdal
+
+    from .preprocessor import ppr
+    from .utci_process import compute_utci, map_files_by_key
+    from .walls_aspect import run_parallel_processing
+
+    def _coverage_fraction(arr):
+        if arr is None:
+            return 0.0
+        total = arr.size
+        if total == 0:
+            return 0.0
+        return float(np.count_nonzero(arr > 0)) / float(total)
+
+    def _is_sparse_tile(building_dsm_path, tree_path, min_building_fraction=0.01, min_tree_fraction=0.01):
+        dsm_ds = gdal.Open(building_dsm_path)
+        if dsm_ds is None:
+            raise FileNotFoundError(f"Could not open Building_DSM tile: {building_dsm_path}")
+        dsm_arr = dsm_ds.GetRasterBand(1).ReadAsArray()
+        dsm_ds = None
+
+        tree_ds = gdal.Open(tree_path)
+        if tree_ds is None:
+            raise FileNotFoundError(f"Could not open Trees tile: {tree_path}")
+        tree_arr = tree_ds.GetRasterBand(1).ReadAsArray()
+        tree_ds = None
+
+        building_fraction = _coverage_fraction(dsm_arr)
+        tree_fraction = _coverage_fraction(tree_arr)
+
+        sparse = (building_fraction < min_building_fraction) and (tree_fraction < min_tree_fraction)
+        return sparse, building_fraction, tree_fraction
+
     preprocess_dir = os.path.join(base_path, "processed_inputs")
     os.makedirs(preprocess_dir, exist_ok=True)
 
     ppr(
-        base_path, building_dsm_filename, dem_filename, trees_filename,
-        landcover_filename, tile_size, overlap, selected_date_str, use_own_met,
-        start_time, end_time, data_source_type, data_folder, own_met_file,
+        base_path,
+        building_dsm_filename,
+        dem_filename,
+        trees_filename,
+        landcover_filename,
+        tile_size,
+        overlap,
+        selected_date_str,
+        use_own_met,
+        start_time,
+        end_time,
+        data_source_type,
+        data_folder,
+        own_met_file,
         preprocess_dir=preprocess_dir,
-        reuse_tiles=reuse_tiles
+        reuse_tiles=reuse_tiles,
     )
+
+    # ==========================================================
+    # Record skipped sparse tiles here:
+    # processed_inputs/skipped_sparse_tiles.txt
+    # ==========================================================
+    skipped_tiles_file = os.path.join(preprocess_dir, "skipped_sparse_tiles.txt")
+
+    # clear file at the beginning of each run
+    with open(skipped_tiles_file, "w", encoding="utf-8") as f:
+        f.write("tile_key,building_fraction,tree_fraction\n")
 
     base_output_path = os.path.join(base_path, "output_folder")
     inputMet = os.path.join(preprocess_dir, "metfiles")
@@ -142,7 +195,17 @@ def thermal_comfort(
     walls_dir = os.path.join(preprocess_dir, "walls")
     aspect_dir = os.path.join(preprocess_dir, "aspect")
 
-    run_parallel_processing(building_dsm_dir, walls_dir, aspect_dir,skip_existing=reuse_wall_aspect)
+    run_parallel_processing(
+        building_dsm_dir,
+        tree_dir,
+        walls_dir,
+        aspect_dir,
+        skip_existing=reuse_wall_aspect,
+        skip_sparse_tiles=skip_sparse_tiles,
+        min_building_fraction=min_building_fraction,
+        min_tree_fraction=min_tree_fraction
+    )
+
     print("Running Solweig ...")
 
     building_dsm_map = map_files_by_key(building_dsm_dir, ".tif")
@@ -154,41 +217,68 @@ def thermal_comfort(
     met_map = map_files_by_key(inputMet, ".txt")
 
     common_keys = set(building_dsm_map) & set(tree_map) & set(dem_map) & set(met_map)
-    
     if landcover_dir:
         common_keys &= set(landcover_map)
 
     def _numeric_key(k: str):
-        """Sort tiles by numeric coordinates (x, y)."""
-        x, y = k.split("_")
-        return (int(x), int(y))
+        try:
+            x_str, y_str = k.split("_")
+            return (int(x_str), int(y_str))
+        except Exception:
+            return (10**18, 10**18)
 
-    for key in sorted(common_keys, key=_numeric_key):
+    sorted_keys = sorted(common_keys, key=_numeric_key)
 
-        building_dsm_path = building_dsm_map[key]
+    for key in sorted_keys:
+        print(f"Processing tile: {key}")
+
+        dsm_path = building_dsm_map[key]
         tree_path = tree_map[key]
         dem_path = dem_map[key]
-        landcover_path = landcover_map.get(key) if landcover_dir else None
+        met_path = met_map[key]
         walls_path = walls_map.get(key)
         aspect_path = aspect_map.get(key)
-        met_file_path = met_map[key]
+        landcover_path = landcover_map.get(key) if landcover_dir else None
+
+        if skip_sparse_tiles:
+            sparse, building_fraction, tree_fraction = _is_sparse_tile(
+                dsm_path,
+                tree_path,
+                min_building_fraction=min_building_fraction,
+                min_tree_fraction=min_tree_fraction
+            )
+            if sparse:
+                print(
+                    f"Skipping sparse tile in main simulation: {key} "
+                    f"(building={building_fraction:.2%}, tree={tree_fraction:.2%})"
+                )
+
+                # append skipped sparse tile info
+                with open(skipped_tiles_file, "a", encoding="utf-8") as f:
+                    f.write(f"{key},{building_fraction:.6f},{tree_fraction:.6f}\n")
+
+                continue
+
+        if walls_path is None or aspect_path is None:
+            print(f"Skipping tile {key}: missing wall or aspect file.")
+            continue
 
         output_folder = os.path.join(base_output_path, key)
         os.makedirs(output_folder, exist_ok=True)
 
-        met_file_data = np.loadtxt(met_file_path, skiprows=1, delimiter=' ')
+        met_file_data = np.loadtxt(met_path, skiprows=1)
 
         compute_utci(
-            building_dsm_path,
-            tree_path,
-            dem_path,
-            walls_path,
-            aspect_path,
-            landcover_path,
-            met_file_data,
-            output_folder,
-            key,  
-            selected_date_str,
+            building_dsm_path=dsm_path,
+            tree_path=tree_path,
+            dem_path=dem_path,
+            walls_path=walls_path,
+            aspect_path=aspect_path,
+            landcover_path=landcover_path,
+            met_file_data=met_file_data,
+            output_folder=output_folder,
+            key=key,
+            selected_date_str=selected_date_str,
             save_tmrt=save_tmrt,
             save_svf=save_svf,
             save_kup=save_kup,
@@ -199,4 +289,5 @@ def thermal_comfort(
         )
 
         # Free GPU memory between tiles
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
