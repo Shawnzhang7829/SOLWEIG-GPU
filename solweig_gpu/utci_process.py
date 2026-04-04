@@ -157,7 +157,7 @@ def extract_number_from_filename(filename):
     return number
 
 
-def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path, landcover_path, met_file, 
+def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path, landcover_path, met_file_data, 
                 output_path,number,selected_date_str,save_tmrt=False,save_svf=False, save_kup=False,save_kdown=False,save_lup=False,save_ldown=False,save_shadow=False):
     """
     Compute UTCI and related thermal comfort outputs for a single tile.
@@ -172,7 +172,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
         walls_path (str): Path to wall height raster
         aspect_path (str): Path to wall aspect raster  
         landcover_path (str): Path to land cover raster (can be None)
-        met_file (str): Path to meteorological forcing file
+        met_file_data (np.ndarray): Loaded meteorological forcing data
         output_path (str): Directory for saving output rasters
         number (str): Tile identifier (e.g., "0_0")
         selected_date_str (str): Date string (YYYY-MM-DD)
@@ -280,7 +280,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
     local_dt = local_tz.localize(base_date)
     utc = local_dt.utcoffset().total_seconds() / 3600
     print(f"[INFO] Timezone: {timezone_name}, UTC offset: {utc} hours")
-    YYYY, altitude, azimuth, zen, jday, leafon, dectime, altmax = Solweig_2015a_metdata_noload(met_file, location, utc)
+    YYYY, altitude, azimuth, zen, jday, leafon, dectime, altmax = Solweig_2015a_metdata_noload(met_file_data, location, utc)
     temp1[temp1 < 0.] = 0.
     vegdem = temp1 + temp2
     vegdem2 = torch.add(temp1 * 0.25, temp2)
@@ -334,16 +334,16 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
         lcgrid = False
     anisotropic_sky = 1
     patch_option = 2
-    DOY = torch.tensor(met_file[:, 1], device=device)
-    hours = torch.tensor(met_file[:, 2], device=device)
-    minu = torch.tensor(met_file[:, 3], device=device)
-    Ta = torch.tensor(met_file[:, 11], device=device)
-    RH = torch.tensor(met_file[:, 10], device=device)
-    radG = torch.tensor(met_file[:, 14], device=device)
-    radD = torch.tensor(met_file[:, 21], device=device)
-    radI = torch.tensor(met_file[:, 22], device=device)
-    P = torch.tensor(met_file[:, 12], device=device)
-    Ws = torch.tensor(met_file[:, 9], device=device)
+    DOY = torch.tensor(met_file_data[:, 1], device=device)
+    hours = torch.tensor(met_file_data[:, 2], device=device)
+    minu = torch.tensor(met_file_data[:, 3], device=device)
+    Ta = torch.tensor(met_file_data[:, 11], device=device)
+    RH = torch.tensor(met_file_data[:, 10], device=device)
+    radG = torch.tensor(met_file_data[:, 14], device=device)
+    radD = torch.tensor(met_file_data[:, 21], device=device)
+    radI = torch.tensor(met_file_data[:, 22], device=device)
+    P = torch.tensor(met_file_data[:, 12], device=device)
+    Ws = torch.tensor(met_file_data[:, 9], device=device)
     # Prepare leafon based on vegetation type
     if conifer_bool:
         leafon = torch.ones((1, DOY.shape[0]), device=device)
