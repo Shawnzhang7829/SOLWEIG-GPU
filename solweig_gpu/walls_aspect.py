@@ -386,7 +386,7 @@ def run_parallel_processing(
 
     cpu_count = os.cpu_count() or 1
     if os.name == 'nt':
-        max_workers = min(16, max(1, cpu_count // 2))
+        max_workers = min(12, max(1, cpu_count // 2))
     else:
         max_workers = min(32, cpu_count)
 
