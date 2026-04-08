@@ -30,7 +30,7 @@ import pytz
 import datetime
 from .Tgmaps_v1 import Tgmaps_v1
 from .sun_position import Solweig_2015a_metdata_noload
-from .shadow import svf_calculator, create_patches, shadow
+from .shadow import svf_calculator, create_patches, shadow as shadow_func
 from .solweig import Solweig_2022a_calc, clearnessindex_2013b
 from .calculate_utci import utci_calculator
 import os
@@ -379,7 +379,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
         Shadow_all = []
 
         for i in np.arange(0, Ta.__len__()):
-            sh, vegsh, vbshvegsh = shadow(
+            sh, vegsh, vbshvegsh = shadow_func(
                 amaxvalue,
                 a,
                 vegdsm,
