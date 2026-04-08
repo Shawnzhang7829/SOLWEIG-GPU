@@ -389,7 +389,11 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
                 altitude[0][i],
                 scale
             )
-            Shadow_all.append(sh.cpu().numpy())
+
+            psi_i = psi[0][i]
+            shadow_out = sh - (1 - vegsh) * (1 - psi_i)
+
+            Shadow_all.append(shadow_out.cpu().numpy())
 
         Shadow_all = np.array(Shadow_all)
 
@@ -415,12 +419,12 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
 
         out_dataset_op = None
 
-        # Clean up datasets
         dataset = None
         dataset2 = None
         dataset3 = None
         dataset4 = None
         dataset5 = None
+
         end_time = time.time()
         time_taken = end_time - start_time
         print(f"Time taken to execute tile {number} (shadow only): {time_taken:.2f} seconds")
