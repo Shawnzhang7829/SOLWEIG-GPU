@@ -34,6 +34,7 @@ def thermal_comfort(
     save_lup=False,
     save_ldown=False,
     save_shadow=False,
+    only_shadow=False,   # 新增参数：仅计算阴影图，跳过其他计算
     reuse_tiles = False,
     reuse_wall_aspect = False,
     skip_sparse_tiles=True,
@@ -285,7 +286,8 @@ def thermal_comfort(
             save_kdown=save_kdown,
             save_lup=save_lup,
             save_ldown=save_ldown,
-            save_shadow=save_shadow
+            save_shadow=save_shadow,
+            only_shadow=only_shadow   # 新增参数传递
         )
 
         # Free GPU memory between tiles

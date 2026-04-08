@@ -30,7 +30,7 @@ import pytz
 import datetime
 from .Tgmaps_v1 import Tgmaps_v1
 from .sun_position import Solweig_2015a_metdata_noload
-from .shadow import svf_calculator, create_patches
+from .shadow import svf_calculator, create_patches, shadow
 from .solweig import Solweig_2022a_calc, clearnessindex_2013b
 from .calculate_utci import utci_calculator
 import os
@@ -158,7 +158,7 @@ def extract_number_from_filename(filename):
 
 
 def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path, landcover_path, met_file_data, 
-                output_path,number,selected_date_str,save_tmrt=False,save_svf=False, save_kup=False,save_kdown=False,save_lup=False,save_ldown=False,save_shadow=False):
+                output_path,number,selected_date_str,save_tmrt=False,save_svf=False, save_kup=False,save_kdown=False,save_lup=False,save_ldown=False,save_shadow=False,only_shadow=False):
     """
     Compute UTCI and related thermal comfort outputs for a single tile.
     
@@ -371,6 +371,61 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
     timeadd = 0.
     firstdaytime = 1.
     start_time = time.time()
+
+    # ==========================================================
+    # only_shadow: skip SVF / Tmrt / UTCI and only compute shadow
+    # ==========================================================
+    if only_shadow:
+        Shadow_all = []
+
+        for i in np.arange(0, Ta.__len__()):
+            sh, vegsh, vbshvegsh = shadow(
+                amaxvalue,
+                a,
+                vegdsm,
+                vegdsm2,
+                bush,
+                azimuth[0][i],
+                altitude[0][i],
+                scale
+            )
+            Shadow_all.append(sh.cpu().numpy())
+
+        Shadow_all = np.array(Shadow_all)
+
+        driver = gdal.GetDriverByName('GTiff')
+        out_file_path_op = os.path.join(output_path, f'Shadow_{number}.tif')
+        num_bands_op = Shadow_all.shape[0]
+
+        out_dataset_op = driver.Create(
+            out_file_path_op, cols, rows, num_bands_op, gdal.GDT_Float32
+        )
+        out_dataset_op.SetGeoTransform(dataset.GetGeoTransform())
+        out_dataset_op.SetProjection(dataset.GetProjection())
+
+        for band in range(num_bands_op):
+            out_band = out_dataset_op.GetRasterBand(band + 1)
+            out_band.WriteArray(Shadow_all[band])
+            out_band.FlushCache()
+
+            hour = int(hours[band].cpu().item())
+            minute = int(minu[band].cpu().item())
+            timestamp = base_date.replace(hour=hour, minute=minute).isoformat()
+            out_band.SetMetadata({'Time': timestamp})
+
+        out_dataset_op = None
+
+        # Clean up datasets
+        dataset = None
+        dataset2 = None
+        dataset3 = None
+        dataset4 = None
+        dataset5 = None
+        end_time = time.time()
+        time_taken = end_time - start_time
+        print(f"Time taken to execute tile {number} (shadow only): {time_taken:.2f} seconds")
+        return
+
     # Calculate SVF and related parameters (remains unchanged)
     svf, svfaveg, svfE, svfEaveg, svfEveg, svfN, svfNaveg, svfNveg, svfS, svfSaveg, svfSveg, svfveg, svfW, svfWaveg, svfWveg, vegshmat, vbshvegshmat, shmat, svftotal = svf_calculator(patch_option, amaxvalue, a, vegdsm, vegdsm2, bush, scale)
     svfbuveg = svf - (1.0 - svfveg) * (1.0 - transVeg)
