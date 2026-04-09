@@ -64,7 +64,7 @@ onlyglobal = 1
 
 firstdayleaf = 97
 lastdayleaf = 300
-conifer_bool = False
+conifer_bool = True
 
 def load_raster_to_tensor(dem_path):
     """
@@ -326,7 +326,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
         TmaxLST_wall = 15.
     # Added
     
-    transVeg = 3. / 100.
+    transVeg = 10. / 100.
     # landcover = 1 # Modified
     if landcover == 1:
         lcgrid = lcgrid_torch
