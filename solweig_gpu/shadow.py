@@ -76,8 +76,8 @@ def shadow(amaxvalue, a, vegdem, vegdem2, bush, azimuth, altitude, scale):
     degrees = torch.pi / 180.
     if azimuth == 0.0:
         azimuth = 1e-12
-    azimuth = ensure_tensor(azimuth, device=a.device).float()
-    altitude = ensure_tensor(altitude, device=a.device).float()
+    azimuth = ensure_tensor(azimuth)
+    altitutde = ensure_tensor(altitude)
     azimuth = azimuth * degrees #torch.tensor(azimuth * degrees, device=a.device)
     altitude = altitude * degrees #torch.tensor(altitude * degrees, device=a.device)
 
@@ -175,7 +175,7 @@ def shadow(amaxvalue, a, vegdem, vegdem2, bush, azimuth, altitude, scale):
 
         if bush.max() > 0. and torch.max(fabovea * bush) > 0.:
             tempbush.zero_()
-            tempbush[xp1:xp2, yp1:yp2] = bush[xc1:xc2, yc1:yc2] - dz
+            tempbush[int(xp1)-1:int(xp2), int(yp1)-1:int(yp2)] = bush[int(xc1)-1:int(xc2), int(yc1)-1:int(yc2)] - dz
             g = torch.max(g, tempbush)
             g *= bushplant
 
