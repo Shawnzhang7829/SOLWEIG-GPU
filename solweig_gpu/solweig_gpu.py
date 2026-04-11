@@ -34,6 +34,7 @@ def thermal_comfort(
     save_lup=False,
     save_ldown=False,
     save_shadow=False,
+    shadow_category=False, # 新增参数：是否在阴影图中区分建筑阴影和树荫（True/False）
     only_shadow=False,   # 新增参数：仅计算阴影图，跳过其他计算
     reuse_tiles = False,
     reuse_wall_aspect = False,
@@ -287,6 +288,7 @@ def thermal_comfort(
             save_lup=save_lup,
             save_ldown=save_ldown,
             save_shadow=save_shadow,
+            shadow_category=shadow_category,
             only_shadow=only_shadow   # 新增参数传递
         )
 

@@ -30,8 +30,8 @@ import pytz
 import datetime
 from .Tgmaps_v1 import Tgmaps_v1
 from .sun_position import Solweig_2015a_metdata_noload
-from .shadow import svf_calculator, create_patches, shadow as shadow_func
-from .solweig import Solweig_2022a_calc, clearnessindex_2013b
+from .shadow import svf_calculator, create_patches
+from .solweig import Solweig_2022a_calc, clearnessindex_2013b, Solweig_shadow_calc
 from .calculate_utci import utci_calculator
 import os
 import re
@@ -158,7 +158,7 @@ def extract_number_from_filename(filename):
 
 
 def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path, landcover_path, met_file_data, 
-                output_path,number,selected_date_str,save_tmrt=False,save_svf=False, save_kup=False,save_kdown=False,save_lup=False,save_ldown=False,save_shadow=False,only_shadow=False):
+                output_path,number,selected_date_str,save_tmrt=False,save_svf=False, save_kup=False,save_kdown=False,save_lup=False,save_ldown=False,save_shadow=False,shadow_category=False,only_shadow=False):
     """
     Compute UTCI and related thermal comfort outputs for a single tile.
     
@@ -377,25 +377,38 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
     # ==========================================================
     if only_shadow:
         Shadow_all = []
+        Shadow_category_all = []
 
         for i in np.arange(0, Ta.__len__()):
-            sh, vegsh, vbshvegsh = shadow_func(
-                amaxvalue,
-                a,
-                vegdsm,
-                vegdsm2,
-                bush,
-                azimuth[0][i],
-                altitude[0][i],
-                scale
+            psi_i = psi[0][i]
+
+            shadow_out, sh, vegsh, vbshvegsh, urban_shadow_category, \
+            wallsh, wallsun, wallshve, facesun = Solweig_shadow_calc(
+                dsm=a,
+                scale=scale,
+                rows=rows,
+                cols=cols,
+                altitude=altitude[0][i],
+                azimuth=azimuth[0][i],
+                usevegdem=usevegdem,
+                vegdem=vegdsm,
+                vegdem2=vegdsm2,
+                psi=psi_i,
+                amaxvalue=amaxvalue,
+                bush=bush,
+                walls=walls,
+                dirwalls=dirwalls
             )
 
-            psi_i = psi[0][i]
-            shadow_out = sh - (1 - vegsh) * (1 - psi_i)
+            Shadow_all.append(shadow_out.detach().cpu().numpy())
 
-            Shadow_all.append(shadow_out.cpu().numpy())
+            if shadow_category:
+                Shadow_category_all.append(urban_shadow_category.detach().cpu().numpy())
 
         Shadow_all = np.array(Shadow_all)
+
+        if shadow_category:
+            Shadow_category_all = np.array(Shadow_category_all)
 
         driver = gdal.GetDriverByName('GTiff')
         out_file_path_op = os.path.join(output_path, f'Shadow_{number}.tif')
@@ -419,6 +432,34 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
 
         out_dataset_op = None
 
+        if shadow_category:
+            out_file_path_cat = os.path.join(output_path, f'Category_{number}.tif')
+            num_bands_cat = Shadow_category_all.shape[0]
+
+            out_dataset_cat = driver.Create(
+                out_file_path_cat, cols, rows, num_bands_cat, gdal.GDT_Byte
+            )
+            out_dataset_cat.SetGeoTransform(dataset.GetGeoTransform())
+            out_dataset_cat.SetProjection(dataset.GetProjection())
+
+            for band in range(num_bands_cat):
+                out_band = out_dataset_cat.GetRasterBand(band + 1)
+                out_band.WriteArray(Shadow_category_all[band])
+                out_band.FlushCache()
+
+                hour = int(hours[band].cpu().item())
+                minute = int(minu[band].cpu().item())
+                timestamp = base_date.replace(hour=hour, minute=minute).isoformat()
+                out_band.SetMetadata({
+                    'Time': timestamp,
+                    'Category_0': 'sunlit',
+                    'Category_1': 'building_shadow_only',
+                    'Category_2': 'vegetation_shadow_only',
+                    'Category_3': 'building_and_vegetation_shadow'
+                })
+
+            out_dataset_cat = None
+
         dataset = None
         dataset2 = None
         dataset3 = None
@@ -440,6 +481,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
     tmp = svf + svfveg - 1.0
     tmp[tmp < 0.0] = 0.0
     svfalfa = torch.asin(torch.exp(torch.log(1.0 - tmp) / 2.0))
+
     # Prepare lists to store results for all time steps
     UTCI_all  = []
     TMRT_all  = []
@@ -448,7 +490,9 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
     Lup_all   = []
     Ldown_all = []
     Shadow_all= []
+    Shadow_category_all = []
     CI = 1.0
+
     for i in np.arange(0, Ta.__len__()):
         if landcover == 1:
             if ((dectime[i] - np.floor(dectime[i]))) == 0 or (i == 0):
@@ -466,6 +510,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
                     CI = 1.
             else:
                 CI = 1.
+
         Tmrt, Kdown, Kup, Ldown, Lup, Tg, ea, esky, I0, CI, shadow, firstdaytime, timestepdec, timeadd, \
         Tgmap1, Tgmap1E, Tgmap1S, Tgmap1W, Tgmap1N, Keast, Ksouth, Kwest, Knorth, Least, Lsouth, Lwest, Lnorth, \
         KsideI, TgOut1, TgOut, radIout, radDout, Lside, Lsky_patch_characteristics, CI_Tg, CI_TgG, KsideD, dRad, Kside = Solweig_2022a_calc(
@@ -473,6 +518,7 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
             altitude[0][i], azimuth[0][i], zen[0][i], jday[0][i], usevegdem, onlyglobal, buildings, location, psi[0][i], landcover, lcgrid, dectime[i], altmax[0][i], dirwalls, walls, cyl, elvis, Ta[i], RH[i], radG[i], radD[i], radI[i], P[i],
             amaxvalue, bush, Twater, TgK, Tstart, alb_grid, emis_grid, TgK_wall, Tstart_wall, TmaxLST, TmaxLST_wall, first, second, svfalfa, svfbuveg, firstdaytime, timeadd, timestepdec, Tgmap1, Tgmap1E, Tgmap1S, Tgmap1W, Tgmap1N,
             CI, TgOut1, diffsh, shmat, vegshmat, vbshvegshmat, anisotropic_sky, asvf, patch_option)
+        
         # Create matrices for meteorological parameters for the current time step
         Ta_mat = torch.zeros((rows, cols), device=device) + Ta[i]
         RH_mat = torch.zeros((rows, cols), device=device) + RH[i]
@@ -497,6 +543,10 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
     Lup_all   = np.array(Lup_all)
     Ldown_all = np.array(Ldown_all)
     Shadow_all= np.array(Shadow_all)
+
+    if shadow_category:
+        Shadow_category_all = np.array(Shadow_category_all)
+
     # Write a multi-band GeoTIFF for UTCI (each band corresponds to one time step)
     driver = gdal.GetDriverByName('GTiff')
     out_file_path = os.path.join(output_path, f'UTCI_{number}.tif')
@@ -615,6 +665,29 @@ def compute_utci(building_dsm_path, tree_path, dem_path, walls_path, aspect_path
             timestamp = base_date.replace(hour=hour, minute=minute).isoformat()
             out_band.SetMetadata({'Time': timestamp})
         out_dataset_op = None
+    if shadow_category:
+        out_file_path_cat = os.path.join(output_path, f'Category_{number}.tif')
+        num_bands_cat = Shadow_category_all.shape[0]
+        out_dataset_cat = driver.Create(out_file_path_cat, cols, rows, num_bands_cat, gdal.GDT_Byte)
+        out_dataset_cat.SetGeoTransform(dataset.GetGeoTransform())
+        out_dataset_cat.SetProjection(dataset.GetProjection())
+
+        for band in range(num_bands_cat):
+            out_band = out_dataset_cat.GetRasterBand(band + 1)
+            out_band.WriteArray(Shadow_category_all[band])
+            out_band.FlushCache()
+            hour = int(hours[band].cpu().item())
+            minute = int(minu[band].cpu().item())
+            timestamp = base_date.replace(hour=hour, minute=minute).isoformat()
+            out_band.SetMetadata({
+                'Time': timestamp,
+                'Category_0': 'sunlit',
+                'Category_1': 'building_shadow_only',
+                'Category_2': 'vegetation_shadow_only',
+                'Category_3': 'building_and_vegetation_shadow'
+            })
+
+        out_dataset_cat = None
 
     # Clean up datasets
     dataset = None

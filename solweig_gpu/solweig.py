@@ -1083,9 +1083,15 @@ def shadowingfunction_wallheight_23(a, vegdem, vegdem2, azimuth, altitude, scale
     templastfabovea = torch.zeros((sizex, sizey), device=device)
     templastgabovea = torch.zeros((sizex, sizey), device=device)
     bushplant = (bush > 1).float()
+
     sh = torch.zeros((sizex, sizey), device=device)
     vbshvegsh = torch.zeros((sizex, sizey), device=device)
     vegsh = torch.zeros((sizex, sizey), device=device) + bushplant
+
+    overlap_mask = torch.zeros((sizex, sizey), device=device)
+    # vegsh_raw_accum该像素在整个 shadow 传播过程中，是否曾经被植被阴影命中过，只负责记录“这个像素是否曾经被植被阴影扫到”，不参与后续去重叠清理
+    vegsh_raw_accum = bushplant.clone()
+
     f = a 
     shvoveg = vegdem 
     wallbol = (walls > 0).float()
@@ -1154,12 +1160,24 @@ def shadowingfunction_wallheight_23(a, vegdem, vegdem2, azimuth, altitude, scale
         lastfabovea = templastfabovea > a
         lastgabovea = templastgabovea > a
         dzprev = dz
+
         vegsh2 = fabovea + gabovea + lastfabovea.float() + lastgabovea.float()
         vegsh2 = torch.where(vegsh2 == 4, torch.tensor(0.0, device=device), vegsh2)
         vegsh2 = torch.where(vegsh2 > 0, torch.tensor(1.0, device=device), vegsh2)
 
+        # 累计“原始植被阴影”，不受后续 overlap 清理影响
+        vegsh_raw_accum = torch.maximum(vegsh_raw_accum, vegsh2)
+
+        # 最终用于输出的 vegetation shadow 仍按原逻辑累计
         vegsh = torch.maximum(vegsh, vegsh2)
-        vegsh = torch.where(vegsh * sh > 0, torch.tensor(0.0, device=device), vegsh)
+
+        # overlap 应基于“原始植被阴影累计”而不是当前已清理过的 vegsh
+        overlap_step = ((vegsh_raw_accum > 0) & (sh > 0)).float()
+        overlap_mask = torch.maximum(overlap_mask, overlap_step)
+
+        # 输出用的 vegsh 继续执行去重叠逻辑
+        vegsh = torch.where(overlap_step > 0, torch.tensor(0.0, device=device), vegsh)
+
         vbshvegsh = vbshvegsh + vegsh
 
         index += 1
@@ -1199,9 +1217,9 @@ def shadowingfunction_wallheight_23(a, vegdem, vegdem2, azimuth, altitude, scale
     wallshve = torch.where(wallshve > walls, walls, wallshve)
 
     del fabovea,gabovea,lastfabovea,lastgabovea,vegsh2
-    del tempvegdem,tempvegdem2,templastfabovea,templastgabovea,shvoveg,wallbol
+    del tempvegdem,tempvegdem2,templastfabovea,templastgabovea,shvoveg,wallbol,vegsh_raw_accum
 
-    return vegsh, sh, vbshvegsh, wallsh, wallsun, wallshve, facesh, facesun
+    return vegsh, sh, vbshvegsh, overlap_mask, wallsh, wallsun, wallshve, facesh, facesun
 
 
 def Perez_v3(zen, azimuth, radD, radI, jday, patchchoice, patch_option):
@@ -1903,6 +1921,77 @@ def Lside_veg_v2022a(svfS, svfW, svfN, svfE, svfEveg, svfSveg, svfWveg, svfNveg,
 
     return Least, Lsouth, Lwest, Lnorth
 
+def Solweig_shadow_calc(
+    dsm, scale, rows, cols,
+    altitude, azimuth,
+    usevegdem,
+    vegdem, vegdem2, psi,
+    amaxvalue, bush,
+    walls, dirwalls
+):
+    device = dsm.device if isinstance(dsm, torch.Tensor) else torch.device(
+        'cuda' if torch.cuda.is_available() else 'cpu'
+    )
+
+    altitude_val = altitude.item() if isinstance(altitude, torch.Tensor) else float(altitude)
+    azimuth_val = azimuth.item() if isinstance(azimuth, torch.Tensor) else float(azimuth)
+    amaxvalue_val = amaxvalue.item() if isinstance(amaxvalue, torch.Tensor) else float(amaxvalue)
+
+    if altitude_val <= 0:
+        zero = torch.zeros((rows, cols), device=device)
+        urban_shadow_category = torch.zeros((rows, cols), dtype=torch.uint8, device=device)
+        return zero, zero, zero, zero, urban_shadow_category, zero, zero, zero, zero
+
+    if usevegdem == 1:
+        vegsh, sh, vbshvegsh, overlap_mask, wallsh, wallsun, wallshve, facesh, facesun = shadowingfunction_wallheight_23(
+            dsm,
+            vegdem,
+            vegdem2,
+            azimuth_val,
+            altitude_val,
+            scale,
+            amaxvalue_val,
+            bush,
+            walls,
+            dirwalls * np.pi / 180.
+        )
+
+        shadow = sh - (1 - vegsh) * (1 - psi)
+
+        urban_shadow_category = torch.zeros((rows, cols), dtype=torch.uint8, device=device)
+
+        building_shadow_bool = sh < 0.5
+        vegetation_shadow_bool = vegsh < 0.5
+        overlap_shadow_bool = overlap_mask > 0.5
+
+        building_only_bool = building_shadow_bool & (~overlap_shadow_bool)
+        vegetation_only_bool = vegetation_shadow_bool & (~overlap_shadow_bool)
+
+        urban_shadow_category[building_only_bool] = 1
+        urban_shadow_category[vegetation_only_bool] = 2
+        urban_shadow_category[overlap_shadow_bool] = 3
+
+    else:
+        sh, wallsh, wallsun, facesh, facesun = shadowingfunction_wallheight_13(
+            dsm,
+            azimuth_val,
+            altitude_val,
+            scale,
+            walls,
+            dirwalls * np.pi / 180.
+        )
+
+        vegsh = torch.ones((rows, cols), device=device)
+        vbshvegsh = torch.ones((rows, cols), device=device)
+        wallshve = torch.zeros((rows, cols), device=device)
+        shadow = sh
+
+        urban_shadow_category = torch.zeros((rows, cols), dtype=torch.uint8, device=device)
+
+    return (
+        shadow, sh, vegsh, vbshvegsh, urban_shadow_category,
+        wallsh, wallsun, wallshve, facesun,
+    )
 
 def Solweig_2022a_calc(i, dsm, scale, rows, cols, svf, svfN, svfW, svfE, svfS, svfveg, svfNveg, svfEveg, svfSveg,
                        svfWveg, svfaveg, svfEaveg, svfSaveg, svfWaveg, svfNaveg, vegdem, vegdem2, albedo_b, absK, absL,
@@ -2034,8 +2123,11 @@ def Solweig_2022a_calc(i, dsm, scale, rows, cols, svf, svfN, svfW, svfE, svfS, s
 
         # Shadow  images
         if usevegdem == 1:
-            vegsh, sh, _, wallsh, wallsun, wallshve, _, facesun = shadowingfunction_wallheight_23(dsm, vegdem, vegdem2,
-                                        azimuth.item(), altitude.item(), scale, amaxvalue.item(), bush, walls, dirwalls * np.pi / 180.)
+            vegsh, sh, _, _, wallsh, wallsun, wallshve, _, facesun = shadowingfunction_wallheight_23(
+                dsm, vegdem, vegdem2,
+                azimuth.item(), altitude.item(), scale,
+                amaxvalue.item(), bush, walls, dirwalls * np.pi / 180.
+            )
             shadow = sh - (1 - vegsh) * (1 - psi)
         else:
             sh, wallsh, wallsun, facesh, facesun = shadowingfunction_wallheight_13(dsm, azimuth.item(), altitude.item(), scale,
